@@ -1,0 +1,8 @@
+{
+  "name": "Luma Shell — COSMIC Desktop & GPU Compositor",
+  "description": "GPU-accelerated COSMIC Desktop shell environment, floating dock compositor, and 3-zone panel applet settings studio for Luma Shell.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -37,6 +37,145 @@ pub(crate) unsafe fn read_registry_wallpaper() -> Result<String, ()> {
 }
 
 static mut CACHED_WALLPAPER: Option<(HBITMAP, i32, i32, String)> = None;
+static mut CACHED_ORBITAL_DIB: Option<(HBITMAP, i32, i32)> = None;
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn orbital_hash(x: f32, y: f32) -> f32 {
+    let n = (x * 127.1 + y * 311.7).sin() * 43758.5453;
+    n - n.floor()
+}
+
+fn orbital_noise(x: f32, y: f32) -> f32 {
+    let ix = x.floor();
+    let iy = y.floor();
+    let fx = x - ix;
+    let fy = y - iy;
+    let ux = fx * fx * (3.0 - 2.0 * fx);
+    let uy = fy * fy * (3.0 - 2.0 * fy);
+    let a = orbital_hash(ix, iy);
+    let b = orbital_hash(ix + 1.0, iy);
+    let c = orbital_hash(ix, iy + 1.0);
+    let d = orbital_hash(ix + 1.0, iy + 1.0);
+    a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy
+}
+
+fn orbital_fbm(mut x: f32, mut y: f32) -> f32 {
+    let mut sum = 0.0f32;
+    let mut amp = 0.52f32;
+    for _ in 0..4 {
+        sum += amp * orbital_noise(x, y);
+        let nx = 0.8 * x - 0.6 * y + 11.4;
+        let ny = 0.6 * x + 0.8 * y + 7.2;
+        x = nx * 2.04;
+        y = ny * 2.04;
+        amp *= 0.5;
+    }
+    sum
+}
+
+/// Generates and caches a 32-bit DIB rendering the COSMIC Orbital Earth planetary horizon
+/// (deep space upper-left, cobalt Rayleigh atmosphere arc, terracotta Sahara terrain lower-right).
+unsafe fn get_cached_orbital_earth_bitmap(w: i32, h: i32) -> Option<(HBITMAP, i32, i32)> {
+    let rw = (w / 2).clamp(320, 960);
+    let rh = (h / 2).clamp(180, 540);
+    if let Some((bmp, cw, ch)) = CACHED_ORBITAL_DIB {
+        if cw == rw && ch == rh && !bmp.is_invalid() {
+            return Some((bmp, cw, ch));
+        }
+        let _ = DeleteObject(bmp);
+        CACHED_ORBITAL_DIB = None;
+    }
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: rw,
+            biHeight: -rh,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits = null_mut();
+    let bitmap = CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
+    if bits.is_null() {
+        let _ = DeleteObject(bitmap);
+        return None;
+    }
+    let aspect = rw as f32 / rh.max(1) as f32;
+    let center_x = 1.18 * aspect;
+    let center_y = -0.78f32;
+    let radius = 1.62f32;
+    let out = bits as *mut u32;
+
+    for py in 0..rh {
+        let uv_y = 1.0 - (py as f32 / rh as f32);
+        let row_off = (py * rw) as usize;
+        for px in 0..rw {
+            let uv_x = px as f32 / rw as f32;
+            let dx = uv_x * aspect - center_x;
+            let dy = uv_y - center_y;
+            let d = (dx * dx + dy * dy).sqrt();
+            let dist_from_limb = d - radius;
+
+            let (mut r, mut g, mut b) = (0.002f32, 0.0025f32, 0.004f32);
+            if dist_from_limb < 0.0 {
+                let depth = (-dist_from_limb).clamp(0.0, 1.0);
+                let tx = dx * 2.1 - dy * 1.45;
+                let ty = dx * 1.35 + dy * 2.15;
+                let warp = orbital_fbm(tx * 1.5, ty * 1.5);
+                let ridges = orbital_fbm(tx * 3.1 + warp * 1.2, ty * 2.8 - warp * 0.9);
+                let dunes = orbital_fbm(tx * 6.0, ty * 5.2 + ridges * 1.1);
+
+                // Warm ochre / terracotta Sahara palette with dark basalt plateaus
+                let mut tr = 0.86 * (1.0 - ridges) + 0.78 * ridges;
+                let mut tg = 0.56 * (1.0 - ridges) + 0.42 * ridges;
+                let mut tb = 0.34 * (1.0 - ridges) + 0.25 * ridges;
+
+                let basalt = smoothstep(0.47, 0.72, orbital_fbm(tx * 2.3 + 4.1, ty * 2.5 - 2.3));
+                tr = tr * (1.0 - basalt * 0.68) + 0.16 * (basalt * 0.68);
+                tg = tg * (1.0 - basalt * 0.68) + 0.15 * (basalt * 0.68);
+                tb = tb * (1.0 - basalt * 0.68) + 0.17 * (basalt * 0.68);
+
+                let dune_boost = smoothstep(0.45, 0.82, dunes) * 0.18;
+                tr = (tr + dune_boost * 0.95).min(1.0);
+                tg = (tg + dune_boost * 0.68).min(1.0);
+                tb = (tb + dune_boost * 0.42).min(1.0);
+
+                // Atmospheric Rayleigh haze near the curved planetary limb
+                let limb_haze = (-depth * 11.0).exp();
+                let mid_haze = (-depth * 3.6).exp();
+                r = tr * (1.0 - mid_haze * 0.42) + 0.30 * (mid_haze * 0.42);
+                g = tg * (1.0 - mid_haze * 0.42) + 0.52 * (mid_haze * 0.42);
+                b = tb * (1.0 - mid_haze * 0.42) + 0.92 * (mid_haze * 0.42);
+
+                r = r * (1.0 - limb_haze * 0.82) + 0.22 * (limb_haze * 0.82);
+                g = g * (1.0 - limb_haze * 0.82) + 0.58 * (limb_haze * 0.82);
+                b = b * (1.0 - limb_haze * 0.82) + 1.00 * (limb_haze * 0.82);
+            } else {
+                // Electric cobalt outer atmospheric limb glow into pitch-black space
+                let inner_glow = (-dist_from_limb * 26.0).exp();
+                let outer_glow = (-dist_from_limb * 9.5).exp() * 0.55;
+                r += inner_glow * 0.14 + outer_glow * 0.04;
+                g += inner_glow * 0.48 + outer_glow * 0.18;
+                b += inner_glow * 1.00 + outer_glow * 0.62;
+            }
+
+            let ur = (r.clamp(0.0, 1.0) * 255.0) as u32;
+            let ug = (g.clamp(0.0, 1.0) * 255.0) as u32;
+            let ub = (b.clamp(0.0, 1.0) * 255.0) as u32;
+            *out.add(row_off + px as usize) = (ur << 16) | (ug << 8) | ub;
+        }
+    }
+
+    CACHED_ORBITAL_DIB = Some((bitmap, rw, rh));
+    Some((bitmap, rw, rh))
+}
 
 pub(crate) unsafe fn get_cached_wallpaper(path: &str) -> Option<(HBITMAP, i32, i32)> {
     if let Some((bmp, w, h, cached_path)) = &CACHED_WALLPAPER {
@@ -225,38 +364,19 @@ pub(crate) unsafe fn paint_desktop(hwnd: HWND, screen_dc: HDC) {
     }
 
     if !drawn {
-        let steps = h.min(256);
-        for i in 0..steps {
-            let y1 = (i * h) / steps;
-            let y2 = ((i + 1) * h) / steps;
-            let t = i as f32 / steps as f32;
-            let r_col = (13.0 + t * 15.0) as u32;
-            let g_col = (18.0 + t * 8.0) as u32;
-            let b_col = (30.0 + t * 35.0) as u32;
-            let color = (r_col << 16) | (g_col << 8) | b_col;
-            let b = brush(color);
-            let band = RECT {
-                left: 0,
-                top: y1,
-                right: w,
-                bottom: y2 + 1,
-            };
-            FillRect(hdc, &band, b);
+        if let Some((orb_bmp, ow, oh)) = get_cached_orbital_earth_bitmap(w, h) {
+            let img_dc = CreateCompatibleDC(hdc);
+            let img_old = SelectObject(img_dc, orb_bmp);
+            let _ = SetStretchBltMode(hdc, HALFTONE);
+            let _ = SetBrushOrgEx(hdc, 0, 0, None);
+            let _ = StretchBlt(hdc, 0, 0, w, h, img_dc, 0, 0, ow, oh, SRCCOPY);
+            SelectObject(img_dc, img_old);
+            let _ = DeleteDC(img_dc);
+        } else {
+            let b = brush(0x020408);
+            FillRect(hdc, &r, b);
             let _ = DeleteObject(b);
         }
-
-        let cx = w / 2;
-        let cy = (h / 2) - 40;
-        icon_text(hdc, "\u{E707}", cx - 24, cy - 24, 0x334155, 48);
-        text(hdc, "Luma Desktop", cx - 55, cy + 32, 0x475569, 18);
-        text(
-            hdc,
-            "Right-click anywhere for menu · Win for applications",
-            cx - 130,
-            cy + 58,
-            0x334155,
-            12,
-        );
     }
 
     // Desktop icons

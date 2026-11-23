@@ -129,12 +129,18 @@ mod dock;
 mod launch_popup;
 mod osd;
 mod panel;
+use panel::{
+    COPYDATASTRUCT, broadcast_taskbar_created, is_tray_chevron_at_x, paint_panel, panel_applet_at,
+    panel_tray_bounds, tray_icon_at_x,
+};
 mod popups;
 mod settings;
 mod switcher;
 use popups::*;
 mod snipping;
 use snipping::*;
+mod gpu;
+use gpu::*;
 
 const PANEL_HEIGHT: i32 = 38;
 
@@ -825,8 +831,33 @@ unsafe fn reposition_primary_panel() {
     REPOSITIONING_PRIMARY = false;
 }
 
+const CLEARTYPE_NATURAL_QUALITY_VAL: u32 = 6;
+
+pub(crate) unsafe fn apply_control_font(hwnd: HWND) {
+    let font = CreateFontW(
+        -14,
+        0,
+        0,
+        0,
+        500,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET.0 as u32,
+        0,
+        0,
+        CLEARTYPE_NATURAL_QUALITY_VAL,
+        0,
+        PCWSTR(wide("Segoe UI Variable Text").as_ptr()),
+    );
+    if !font.is_invalid() {
+        let _ = SendMessageW(hwnd, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1));
+    }
+}
+
 unsafe fn text_with_face(hdc: HDC, value: &str, x: i32, y: i32, color: u32, size: i32, face: &str) {
-    // Negative height specifies character em-height, ensuring sharp, crisp, properly proportioned glyphs.
+    // Negative height specifies character em-height with CLEARTYPE_NATURAL_QUALITY (6)
+    // for sub-pixel natural width positioning without bitmap pixelation.
     let font_height = -size.abs();
     let font = CreateFontW(
         font_height,
@@ -840,7 +871,7 @@ unsafe fn text_with_face(hdc: HDC, value: &str, x: i32, y: i32, color: u32, size
         DEFAULT_CHARSET.0 as u32,
         0,
         0,
-        CLEARTYPE_QUALITY.0 as u32,
+        CLEARTYPE_NATURAL_QUALITY_VAL,
         0,
         PCWSTR(wide(face).as_ptr()),
     );
@@ -854,8 +885,6 @@ unsafe fn text_with_face(hdc: HDC, value: &str, x: i32, y: i32, color: u32, size
 }
 
 unsafe fn measure_text_with_face(hdc: HDC, value: &str, size: i32, face: &str) -> i32 {
-    // Negative height specifies character em-height, matching text_with_face so the measured
-    // extent uses the same glyph metrics as the rendered text.
     let font_height = -size.abs();
     let font = CreateFontW(
         font_height,
@@ -869,7 +898,7 @@ unsafe fn measure_text_with_face(hdc: HDC, value: &str, size: i32, face: &str) -
         DEFAULT_CHARSET.0 as u32,
         0,
         0,
-        CLEARTYPE_QUALITY.0 as u32,
+        CLEARTYPE_NATURAL_QUALITY_VAL,
         0,
         PCWSTR(wide(face).as_ptr()),
     );
@@ -891,7 +920,7 @@ unsafe fn measure_text_with_face(hdc: HDC, value: &str, size: i32, face: &str) -
 }
 
 unsafe fn text(hdc: HDC, value: &str, x: i32, y: i32, color: u32, size: i32) {
-    text_with_face(hdc, value, x, y, color, size, "Segoe UI");
+    text_with_face(hdc, value, x, y, color, size, "Segoe UI Variable Text");
 }
 
 unsafe fn icon_text(hdc: HDC, value: &str, x: i32, y: i32, color: u32, size: i32) {
@@ -1347,305 +1376,7 @@ trait Applet {
     fn width(&self, c: Config) -> i32;
     fn render(&self, hdc: HDC, right: &mut i32);
 }
-struct ClockApplet;
-struct NetworkApplet;
-struct VolumeApplet;
-struct BluetoothApplet;
-struct MediaApplet;
-struct BatteryApplet;
-struct NotificationApplet;
-fn format_date(n: SYSTEMTIME, format: u8) -> String {
-    match format {
-        0 => String::new(),
-        2 => {
-            let weekdays = [
-                "Sunday",
-                "Monday",
-                "Tuesday",
-                "Wednesday",
-                "Thursday",
-                "Friday",
-                "Saturday",
-            ];
-            let months = [
-                "January",
-                "February",
-                "March",
-                "April",
-                "May",
-                "June",
-                "July",
-                "August",
-                "September",
-                "October",
-                "November",
-                "December",
-            ];
-            format!(
-                "{}, {} {}",
-                weekdays[n.wDayOfWeek.min(6) as usize],
-                months[n.wMonth.saturating_sub(1).min(11) as usize],
-                n.wDay
-            )
-        }
-        _ => format!("{:04}-{:02}-{:02}", n.wYear, n.wMonth, n.wDay),
-    }
-}
-impl Applet for ClockApplet {
-    fn enabled(&self, c: Config) -> bool {
-        c.show_clock
-    }
-    fn width(&self, _c: Config) -> i32 {
-        let n: SYSTEMTIME = unsafe { GetLocalTime() };
-        let time = if unsafe { CONFIG.clock_24h } {
-            format!("{:02}:{:02}", n.wHour, n.wMinute)
-        } else {
-            let hour = if n.wHour == 0 {
-                12
-            } else if n.wHour > 12 {
-                n.wHour - 12
-            } else {
-                n.wHour
-            };
-            let suffix = if n.wHour >= 12 { "PM" } else { "AM" };
-            format!("{}:{:02} {}", hour, n.wMinute, suffix)
-        };
-        let date = format_date(n, unsafe { CONFIG.date_format });
-        let value = if date.is_empty() {
-            time
-        } else {
-            format!("{} · {}", time, date)
-        };
-        (value.chars().count() as i32 * 8 + 32).max(96)
-    }
-    fn render(&self, hdc: HDC, right: &mut i32) {
-        let n: SYSTEMTIME = unsafe { GetLocalTime() };
-        let time = if unsafe { CONFIG.clock_24h } {
-            format!("{:02}:{:02}", n.wHour, n.wMinute)
-        } else {
-            let hour = if n.wHour == 0 {
-                12
-            } else if n.wHour > 12 {
-                n.wHour - 12
-            } else {
-                n.wHour
-            };
-            let suffix = if n.wHour >= 12 { "PM" } else { "AM" };
-            format!("{}:{:02} {}", hour, n.wMinute, suffix)
-        };
-        let date = format_date(n, unsafe { CONFIG.date_format });
-        let value = if date.is_empty() {
-            time
-        } else {
-            format!("{} · {}", time, date)
-        };
-        let width = (value.chars().count() as i32 * 8 + 32).max(96);
-        // Center the ink within the applet's allotted box so a centered zone is visually
-        // centered instead of sitting at the left edge of its estimated width.
-        let content = unsafe { 20 + measure_text_with_face(hdc, &value, 13, "Segoe UI") };
-        let x = *right - width + (width - content) / 2;
-        unsafe {
-            icon_text(hdc, "\u{E823}", x, 10, 0x94a3b8, 14);
-            text(hdc, &value, x + 20, 10, 0xe8ecf2, 13);
-        }
-        *right -= width;
-    }
-}
-impl Applet for NetworkApplet {
-    fn enabled(&self, c: Config) -> bool {
-        c.show_network
-    }
-    fn width(&self, _c: Config) -> i32 {
-        36
-    }
-    fn render(&self, hdc: HDC, right: &mut i32) {
-        let (connected, wifi, wifi_details) = unsafe { network_snapshot() };
-        let icon = if wifi {
-            if !connected {
-                "\u{E783}"
-            } else {
-                let quality = wifi_details.as_ref().map(|(_, q)| *q).unwrap_or(100);
-                if quality >= 75 {
-                    "\u{E701}"
-                } else if quality >= 50 {
-                    "\u{E874}"
-                } else if quality >= 25 {
-                    "\u{E873}"
-                } else {
-                    "\u{E872}"
-                }
-            }
-        } else if connected {
-            "\u{E839}"
-        } else {
-            "\u{E783}"
-        };
-        let x = *right - 36 + (36 - 16) / 2;
-        unsafe {
-            icon_text(
-                hdc,
-                icon,
-                x,
-                10,
-                if connected { 0x38bdf8 } else { 0xf87171 },
-                16,
-            );
-        }
-        *right -= 36;
-    }
-}
-impl Applet for VolumeApplet {
-    fn enabled(&self, c: Config) -> bool {
-        c.show_volume
-    }
-    fn width(&self, _c: Config) -> i32 {
-        let (_level, _muted) = unsafe { default_audio_state().unwrap_or((0, false)) };
-        let sessions = unsafe { active_audio_session_count() };
-        let label = if sessions > 0 {
-            format!("{}% · {}", _level, sessions)
-        } else {
-            format!("{}%", _level)
-        };
-        let text_w = label.len() as i32 * 8 + 4;
-        text_w + 24 + 10
-    }
-    fn render(&self, hdc: HDC, right: &mut i32) {
-        let (level, muted) = unsafe { default_audio_state().unwrap_or((0, false)) };
-        let sessions = unsafe { active_audio_session_count() };
-        let icon = if muted {
-            "\u{E74F}"
-        } else if level < 33 {
-            "\u{E993}"
-        } else if level < 66 {
-            "\u{E994}"
-        } else {
-            "\u{E767}"
-        };
-        let icon_col = if muted { 0xf87171 } else { 0x38bdf8 };
-        let label = if sessions > 0 {
-            format!("{}% · {}", level, sessions)
-        } else {
-            format!("{}%", level)
-        };
-        let text_w = label.len() as i32 * 8 + 4;
-        let width = text_w + 24;
-        let footprint = width + 10;
-        let content = unsafe { 20 + measure_text_with_face(hdc, &label, 13, "Segoe UI") };
-        let x = *right - footprint + (footprint - content) / 2;
-        unsafe {
-            icon_text(hdc, icon, x, 10, icon_col, 15);
-            text(hdc, &label, x + 20, 10, 0xe2e8f0, 13);
-        }
-        *right -= footprint;
-    }
-}
-impl Applet for BluetoothApplet {
-    fn enabled(&self, c: Config) -> bool {
-        c.show_bluetooth
-    }
-    fn width(&self, _c: Config) -> i32 {
-        36
-    }
-    fn render(&self, hdc: HDC, right: &mut i32) {
-        let (present, any_connected) = unsafe { bluetooth_status_snapshot() };
-        let icon = if !present { "\u{E711}" } else { "\u{E702}" };
-        let color = if any_connected {
-            0x38bdf8
-        } else if present {
-            0x38bdf8
-        } else {
-            0x7f8a9a
-        };
-        let x = *right - 36 + (36 - 16) / 2;
-        unsafe {
-            icon_text(hdc, icon, x, 10, color, 15);
-        }
-        *right -= 36;
-    }
-}
-impl Applet for MediaApplet {
-    fn enabled(&self, c: Config) -> bool {
-        c.show_media
-    }
-    fn width(&self, _c: Config) -> i32 {
-        if unsafe { media_playing() }.is_some() {
-            46
-        } else {
-            0
-        }
-    }
-    fn render(&self, hdc: HDC, right: &mut i32) {
-        let Some(playing) = (unsafe { media_playing() }) else {
-            return;
-        };
-        unsafe {
-            icon_text(hdc, "\u{E8D6}", *right - 38, 10, 0xf472b6, 13);
-            icon_text(
-                hdc,
-                if playing { "\u{E768}" } else { "\u{E769}" },
-                *right - 20,
-                10,
-                0xf472b6,
-                15,
-            );
-        }
-        *right -= 46;
-    }
-}
-impl Applet for BatteryApplet {
-    fn enabled(&self, c: Config) -> bool {
-        c.show_battery
-    }
-    fn width(&self, _c: Config) -> i32 {
-        64 + 8
-    }
-    fn render(&self, hdc: HDC, right: &mut i32) {
-        let mut status = SYSTEM_POWER_STATUS::default();
-        let _ = unsafe { GetSystemPowerStatus(&mut status) };
-        let (icon, col) = if status.ACLineStatus == 1 {
-            ("\u{E945}", 0x4ade80)
-        } else if status.BatteryLifePercent <= 20 {
-            ("\u{E850}", 0xf87171)
-        } else if status.BatteryLifePercent <= 50 {
-            ("\u{E854}", 0xfbbf24)
-        } else {
-            ("\u{E859}", 0x4ade80)
-        };
-        let label = format!("{}%", status.BatteryLifePercent);
-        let footprint = 72;
-        let content = unsafe { 20 + measure_text_with_face(hdc, &label, 13, "Segoe UI") };
-        let x = *right - footprint + (footprint - content) / 2;
-        unsafe {
-            icon_text(hdc, icon, x, 10, col, 15);
-            text(hdc, &label, x + 20, 10, col, 13);
-        }
-        *right -= footprint;
-    }
-}
-impl Applet for NotificationApplet {
-    fn enabled(&self, c: Config) -> bool {
-        c.show_notifications
-    }
-    fn width(&self, _c: Config) -> i32 {
-        38
-    }
-    fn render(&self, hdc: HDC, right: &mut i32) {
-        let mut state = QUNS_ACCEPTS_NOTIFICATIONS;
-        let _ = unsafe { SHQueryUserNotificationState().map(|value| state = value) };
-        let quiet = state == QUNS_QUIET_TIME;
-        unsafe {
-            icon_text(
-                hdc,
-                if quiet { "\u{E7E7}" } else { "\u{E7F4}" },
-                *right - 28,
-                10,
-                if quiet { 0xfbbf24 } else { 0xc4b5fd },
-                16,
-            );
-        }
-        *right -= 38;
-    }
-}
+
 
 unsafe fn enable_dark_context_menus() {
     let uxtheme = LoadLibraryExW(
@@ -1772,392 +1503,7 @@ unsafe fn show_power_menu(hwnd: HWND, x: i32, y: i32) {
     }
 }
 
-unsafe fn tray_total_width() -> i32 {
-    TRAY_ICONS.retain(|it| IsWindow(it.hwnd).as_bool());
-    let count = TRAY_ICONS.len().min(4) as i32;
-    if count == 0 { 28 } else { count * 24 + 28 }
-}
-
-unsafe fn tray_icon_at_x(hwnd: HWND, x: i32) -> Option<usize> {
-    let mut client = RECT::default();
-    if GetClientRect(hwnd, &mut client).is_err() {
-        return None;
-    }
-    let tray_right = client.right - 78;
-    let total_w = tray_total_width();
-    let tray_left = tray_right - total_w;
-    if x < tray_left || x >= tray_right {
-        return None;
-    }
-    if x < tray_left + 28 {
-        return None;
-    }
-    let rel_x = x - (tray_left + 28);
-    let index = (rel_x / 24) as usize;
-    if index < TRAY_ICONS.len().min(4) {
-        Some(index)
-    } else {
-        None
-    }
-}
-
-unsafe fn is_tray_chevron_at_x(hwnd: HWND, x: i32) -> bool {
-    let mut client = RECT::default();
-    if GetClientRect(hwnd, &mut client).is_err() {
-        return false;
-    }
-    let tray_right = client.right - 78;
-    let total_w = tray_total_width();
-    let tray_left = tray_right - total_w;
-    x >= tray_left && x < tray_left + 28
-}
-
-#[repr(C)]
-#[allow(non_snake_case)]
-struct COPYDATASTRUCT {
-    dwData: usize,
-    cbData: u32,
-    lpData: *mut std::ffi::c_void,
-}
-
-unsafe fn broadcast_taskbar_created() {
-    let taskbar_created = RegisterWindowMessageW(PCWSTR(wide("TaskbarCreated").as_ptr()));
-    let _ = ChangeWindowMessageFilter(taskbar_created, CHANGE_WINDOW_MESSAGE_FILTER_FLAGS(1));
-    let _ = SendNotifyMessageW(HWND_BROADCAST, taskbar_created, WPARAM(0), LPARAM(0));
-    let _ = PostMessageW(HWND_BROADCAST, taskbar_created, WPARAM(0), LPARAM(0));
-}
-
-unsafe fn paint_panel(hwnd: HWND, screen_dc: HDC) {
-    let mut r = RECT::default();
-    if GetClientRect(hwnd, &mut r).is_err() {
-        return;
-    }
-    let w = r.right - r.left;
-    let h = r.bottom - r.top;
-    if w <= 0 || h <= 0 {
-        return;
-    }
-
-    let hdc = CreateCompatibleDC(screen_dc);
-    let mem_bmp = CreateCompatibleBitmap(screen_dc, w, h);
-    let old_bmp = SelectObject(hdc, mem_bmp);
-    let _ = SetStretchBltMode(hdc, HALFTONE);
-    let _ = SetBrushOrgEx(hdc, 0, 0, None);
-
-    let c = CONFIG;
-    let accessible = high_contrast();
-    let bg = brush(if accessible {
-        0x000000
-    } else if c.dark {
-        0x13171f
-    } else {
-        0xf1f5f9
-    });
-    FillRect(hdc, &r, bg);
-    let _ = DeleteObject(bg);
-
-    let border = brush(if accessible {
-        0x404040
-    } else if c.dark {
-        0x242b38
-    } else {
-        0xe2e8f0
-    });
-    let border_r = RECT {
-        left: 0,
-        top: r.bottom - 1,
-        right: r.right,
-        bottom: r.bottom,
-    };
-    FillRect(hdc, &border_r, border);
-    let _ = DeleteObject(border);
-
-    let pill_bg = brush(if accessible {
-        0x1a1a1a
-    } else if c.dark {
-        0x1e2430
-    } else {
-        0xe2e8f0
-    });
-    let luma_pill = RECT {
-        left: 10,
-        top: 5,
-        right: 74,
-        bottom: 33,
-    };
-    fill_round_rect(hdc, &luma_pill, pill_bg, 14);
-    let _ = DeleteObject(pill_bg);
-
-    let luma_border_col = if accessible {
-        0x404040
-    } else if c.dark {
-        0x2d3748
-    } else {
-        0xcbd5e1
-    };
-    stroke_round_rect(hdc, &luma_pill, luma_border_col, 1, 14);
-
-    icon_text(
-        hdc,
-        "\u{E707}",
-        18,
-        11,
-        if accessible { 0xffffff } else { 0x38bdf8 },
-        16,
-    );
-    text(
-        hdc,
-        "Luma",
-        39,
-        11,
-        if accessible {
-            0xffffff
-        } else if c.dark {
-            0xf1f5f9
-        } else {
-            0x0f172a
-        },
-        13,
-    );
-
-    let act_pill = RECT {
-        left: 80,
-        top: 5,
-        right: 172,
-        bottom: 33,
-    };
-    let act_bg = brush(if accessible {
-        0x1a1a1a
-    } else if c.dark {
-        0x1a202a
-    } else {
-        0xe8edf5
-    });
-    fill_round_rect(hdc, &act_pill, act_bg, 14);
-    let _ = DeleteObject(act_bg);
-    stroke_round_rect(hdc, &act_pill, luma_border_col, 1, 14);
-
-    icon_text(
-        hdc,
-        "\u{E7C4}",
-        88,
-        11,
-        if accessible { 0xffffff } else { 0x94a3b8 },
-        14,
-    );
-    text(
-        hdc,
-        "Activities",
-        107,
-        11,
-        if accessible {
-            0xffffff
-        } else if c.dark {
-            0x94a3b8
-        } else {
-            0x475569
-        },
-        13,
-    );
-
-    let pwr_pill = RECT {
-        left: r.right - 36,
-        top: 5,
-        right: r.right - 8,
-        bottom: 33,
-    };
-    let pwr_bg = brush(if accessible {
-        0x1a1a1a
-    } else if c.dark {
-        0x241d24
-    } else {
-        0xfee2e2
-    });
-    fill_round_rect(hdc, &pwr_pill, pwr_bg, 14);
-    let _ = DeleteObject(pwr_bg);
-    icon_text(
-        hdc,
-        "\u{E7E8}",
-        r.right - 29,
-        11,
-        if accessible { 0xffffff } else { 0xf87171 },
-        14,
-    );
-
-    let set_pill = RECT {
-        left: r.right - 70,
-        top: 5,
-        right: r.right - 42,
-        bottom: 33,
-    };
-    let set_bg = brush(if accessible {
-        0x1a1a1a
-    } else if c.dark {
-        0x1e2430
-    } else {
-        0xe2e8f0
-    });
-    fill_round_rect(hdc, &set_pill, set_bg, 14);
-    let _ = DeleteObject(set_bg);
-    icon_text(
-        hdc,
-        "\u{E713}",
-        r.right - 63,
-        11,
-        if accessible { 0xffffff } else { 0x94a3b8 },
-        14,
-    );
-
-    // System tray pill & icons on the right (before Settings & Power buttons)
-    TRAY_ICONS.retain(|it| IsWindow(it.hwnd).as_bool());
-    let total_tray_w = tray_total_width();
-    let tray_right = r.right - 78;
-    let tray_left = tray_right - total_tray_w;
-
-    let tray_pill = RECT {
-        left: tray_left,
-        top: 5,
-        right: tray_right,
-        bottom: 33,
-    };
-    let tray_bg = brush(if accessible {
-        0x1a1a1a
-    } else if c.dark {
-        0x1a202a
-    } else {
-        0xe8edf5
-    });
-    fill_round_rect(hdc, &tray_pill, tray_bg, 14);
-    let _ = DeleteObject(tray_bg);
-    stroke_round_rect(hdc, &tray_pill, luma_border_col, 1, 14);
-
-    // Chevron icon '^' at tray_left + 8
-    icon_text(
-        hdc,
-        "\u{E70E}",
-        tray_left + 8,
-        11,
-        if accessible { 0xffffff } else { 0x94a3b8 },
-        12,
-    );
-
-    // Render active tray icons (up to 4 on the panel, rest in popup)
-    for (idx, item) in TRAY_ICONS.iter().take(4).enumerate() {
-        let ix = tray_left + 28 + (idx as i32 * 24) + 3;
-        let iy = 10;
-        if !item.icon.is_invalid() {
-            let _ = DrawIconEx(hdc, ix, iy, item.icon, 18, 18, 0, None, DI_NORMAL);
-        }
-    }
-
-    let applets: [&dyn Applet; 7] = [
-        &ClockApplet as &dyn Applet,
-        &NetworkApplet,
-        &VolumeApplet,
-        &BluetoothApplet,
-        &BatteryApplet,
-        &NotificationApplet,
-        &MediaApplet,
-    ];
-    for zone in 0..3u8 {
-        let mut right = match zone {
-            0 => r.right / 3,
-            1 => {
-                let mut total = 0;
-                for id in c.applet_order {
-                    if c.panel_zones[id.min(6) as usize] != 1 {
-                        continue;
-                    }
-                    let applet = applets[id.min(6) as usize];
-                    if applet.enabled(c) {
-                        total += applet.width(c);
-                    }
-                }
-                (r.right / 2) + (total / 2)
-            }
-            _ => tray_left - 8,
-        };
-        for id in c.applet_order {
-            if c.panel_zones[id.min(6) as usize] != zone {
-                continue;
-            }
-            let applet = applets[id.min(6) as usize];
-            if applet.enabled(c) {
-                applet.render(hdc, &mut right);
-            }
-        }
-    }
-    let _ = BitBlt(screen_dc, 0, 0, w, h, hdc, 0, 0, SRCCOPY);
-    SelectObject(hdc, old_bmp);
-    let _ = DeleteObject(mem_bmp);
-    let _ = DeleteDC(hdc);
-}
-unsafe fn panel_applet_at(hwnd: HWND, x: i32) -> Option<u8> {
-    let mut client = RECT::default();
-    GetClientRect(hwnd, &mut client).ok()?;
-    let c = CONFIG;
-    let applets: [&dyn Applet; 7] = [
-        &ClockApplet as &dyn Applet,
-        &NetworkApplet,
-        &VolumeApplet,
-        &BluetoothApplet,
-        &BatteryApplet,
-        &NotificationApplet,
-        &MediaApplet,
-    ];
-    for zone in 0..3u8 {
-        let mut right = match zone {
-            0 => client.right / 3,
-            1 => {
-                let mut total = 0;
-                for id in c.applet_order {
-                    if c.panel_zones[id.min(6) as usize] != 1 {
-                        continue;
-                    }
-                    let applet = applets[id.min(6) as usize];
-                    let enabled = match id {
-                        0 => c.show_clock,
-                        1 => c.show_network,
-                        2 => c.show_volume,
-                        3 => c.show_bluetooth,
-                        4 => c.show_battery,
-                        5 => c.show_notifications,
-                        _ => c.show_media,
-                    };
-                    if enabled {
-                        total += applet.width(c);
-                    }
-                }
-                (client.right / 2) + (total / 2)
-            }
-            _ => client.right - 78 - tray_total_width() - 8,
-        };
-        for id in c.applet_order {
-            if c.panel_zones[id.min(6) as usize] != zone {
-                continue;
-            }
-            let enabled = match id {
-                0 => c.show_clock,
-                1 => c.show_network,
-                2 => c.show_volume,
-                3 => c.show_bluetooth,
-                4 => c.show_battery,
-                5 => c.show_notifications,
-                _ => c.show_media,
-            };
-            if !enabled {
-                continue;
-            }
-            let width = applets[id.min(6) as usize].width(c);
-            let left = right - width;
-            if x >= left && x < right {
-                return Some(id);
-            }
-            right = left;
-        }
-    }
-    None
-}
+// Panel rendering, tray bounds, and applet hit-testing live in `src/shell/panel.rs`.
 unsafe fn draw_shell_icon(hdc: HDC, target: &str, x: i32, y: i32, size: i32) -> bool {
     let icon = high_res_icon_for_path(target);
     if icon.is_invalid() {
@@ -2255,11 +1601,9 @@ unsafe fn high_res_icon_for_path(path: &str) -> HICON {
 
     let mut icon = HICON(null_mut());
 
-    // 1. Direct best-size extraction for PE binaries and icons for true high-res vector quality
+    // 1. Direct best-size 256x256 extraction for PE binaries and icons for true high-res quality
     let lower = path.to_ascii_lowercase();
-    if lower.ends_with("wt.exe") {
-        icon = extract_icon_best("C:\\Windows\\System32\\cmd.exe", 0);
-    } else if lower.ends_with(".exe") || lower.ends_with(".dll") || lower.ends_with(".ico") {
+    if lower.ends_with(".exe") || lower.ends_with(".dll") || lower.ends_with(".ico") {
         icon = extract_icon_best(path, 0);
     }
 
@@ -2346,23 +1690,41 @@ unsafe fn resolve_system_dock_icon(item_id: usize) -> HICON {
 
 unsafe fn window_high_res_icon(window: HWND) -> HICON {
     let mut icon = HICON(null_mut());
-    let mut result = 0usize;
-    let res = SendMessageTimeoutW(
-        window,
-        WM_GETICON,
-        WPARAM(ICON_BIG as usize),
-        LPARAM(0),
-        SMTO_ABORTIFHUNG,
-        100,
-        Some(&mut result),
-    );
-    if res.0 != 0 && result != 0 {
-        icon = HICON(result as *mut _);
+
+    // 1. Prioritize the actual running executable's 256x256 icon (SHIL_JUMBO / PrivateExtractIconsW).
+    // Most Win32/Chromium/Electron apps (Brave, VS Code, Spotify, Terminal) return a blurry 32x32
+    // icon from WM_GETICON(ICON_BIG), so resolving the process binary first produces razor-sharp icons.
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(window, Some(&mut pid));
+    if let Some(path) = process_image_path(pid) {
+        let path_str = path.to_string_lossy();
+        let lower = path_str.to_ascii_lowercase();
+        if !lower.ends_with("applicationframehost.exe") && !lower.ends_with("wwahost.exe") {
+            icon = high_res_icon_for_path(&path_str);
+        }
+    }
+
+    // 2. Fallback to window-provided icon (needed for UWP / ApplicationFrameHost windows or custom icons)
+    if icon.is_invalid() {
+        let mut result = 0usize;
+        let res = SendMessageTimeoutW(
+            window,
+            WM_GETICON,
+            WPARAM(ICON_BIG as usize),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG,
+            100,
+            Some(&mut result),
+        );
+        if res.0 != 0 && result != 0 {
+            icon = HICON(result as *mut _);
+        }
     }
     if icon.is_invalid() {
         icon = HICON(GetClassLongPtrW(window, GCLP_HICON) as *mut _);
     }
     if icon.is_invalid() {
+        let mut result = 0usize;
         let res = SendMessageTimeoutW(
             window,
             WM_GETICON,
@@ -2378,14 +1740,6 @@ unsafe fn window_high_res_icon(window: HWND) -> HICON {
     }
     if icon.is_invalid() {
         icon = HICON(GetClassLongPtrW(window, GCLP_HICONSM) as *mut _);
-    }
-    if icon.is_invalid() {
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(window, Some(&mut pid));
-        if let Some(path) = process_image_path(pid) {
-            let path_str = path.to_string_lossy();
-            icon = high_res_icon_for_path(&path_str);
-        }
     }
     icon
 }
@@ -2692,27 +2046,33 @@ unsafe fn paint_dock(hwnd: HWND, screen_dc: HDC) {
 
     let c = CONFIG;
     let accessible = high_contrast();
+    let has_app_behind = running_window_count() > 0;
+    let dock_hovered = DOCK_POINTER_X >= 0;
+    // COSMIC translucent glass stadium pill capsule (transparent on empty desktop when not hovered)
     let bg_color = if accessible {
         0x000000
     } else if c.dark {
-        0x1e222b
+        0x0e1016
     } else {
-        0xffffff
+        0xf8fafc
     };
     let border_color = if accessible {
         0xffffff
     } else if c.dark {
-        0x3a4657
+        0x363a47
     } else {
         0xd6dee8
     };
     let base_alpha = if accessible {
-        255u8
+        235u8
+    } else if c.adaptive_dock_transparency && !has_app_behind && !dock_hovered {
+        0u8
     } else {
-        c.transparency.clamp(30, 255)
+        c.transparency.clamp(40, 165)
     };
 
-    let radius = (scaled(hwnd, 16) as f32).min(h as f32 / 2.0);
+    // Full stadium/pill end-caps (radius = height / 2)
+    let radius = h as f32 / 2.0;
     render_dock_background_argb(bits, w, h, radius, bg_color, border_color, base_alpha);
 
     let hdc = CreateCompatibleDC(real_dc);
@@ -2721,84 +2081,88 @@ unsafe fn paint_dock(hwnd: HWND, screen_dc: HDC) {
     let _ = SetBrushOrgEx(hdc, 0, 0, None);
 
     let _ = running_window_count();
+    let halo_radius = ((h as f32) * 0.44).min((c.spacing as f32) * 0.48);
+    let dot_cy = (h - 5).max(46) as f32;
+    let slot_cy = (h / 2) - 2;
+
     let mut x = 24;
     for (index, item_id) in c.dock_order.iter().enumerate() {
         let id = *item_id as usize;
         let slot_cx = x + c.spacing / 2;
-        let slot_cy = 26;
 
-        let distance = if DOCK_POINTER_X >= 0 {
-            (DOCK_POINTER_X - slot_cx).abs()
-        } else {
-            i32::MAX
-        };
-        let influence = ((110 - distance).max(0) as f32 / 110.0)
-            * DOCK_MAGNIFICATION
-            * (c.magnification as f32 / 45.0);
+        let influence = cosmic_magnification_factor(
+            DOCK_POINTER_X,
+            slot_cx,
+            DOCK_MAGNIFICATION,
+            c.magnification,
+        );
         let size = c.icon_size + (c.icon_size as f32 * 0.45 * influence) as i32;
         let active = dock_item_active(*item_id);
 
         if HOVERED_DOCK_ICON == index as i32 || active {
-            let hl_col = if accessible {
-                if HOVERED_DOCK_ICON == index as i32 {
-                    0xffff00
-                } else {
-                    0x404040
-                }
+            let (hl_col, hl_alpha) = if accessible {
+                (0xffff00, 180)
             } else if c.dark {
                 if HOVERED_DOCK_ICON == index as i32 {
-                    0x333d4e
+                    (0xffffff, 34)
                 } else {
-                    0x283243
+                    (0xffffff, 24)
                 }
             } else {
-                if HOVERED_DOCK_ICON == index as i32 {
-                    0xe2e8f0
-                } else {
-                    0xdbeafe
-                }
+                (0x0f172a, 24)
             };
-            let half_box = (c.spacing - 8).min(44) / 2;
-            let box_rect = RECT {
-                left: slot_cx - half_box,
-                top: 5,
-                right: slot_cx + half_box,
-                bottom: 53,
-            };
-            fill_rounded_box_argb(bits, w, h, &box_rect, 10.0, hl_col, 220);
+            fill_circle_argb(
+                bits,
+                w,
+                h,
+                slot_cx as f32,
+                (h as f32) * 0.5,
+                halo_radius,
+                hl_col,
+                hl_alpha,
+            );
         }
 
-        draw_dock_icon(hdc, id, slot_cx, slot_cy, size, accessible);
-        ensure_dib_alpha(
-            bits,
-            w,
-            h,
-            slot_cx - size / 2,
-            slot_cy - size / 2,
-            size,
-            size,
-        );
+        let mut icon = DOCK_ICON_CACHE[id.min(4)];
+        if icon.is_invalid() {
+            icon = resolve_system_dock_icon(id.min(4));
+            DOCK_ICON_CACHE[id.min(4)] = icon;
+        }
+        if !icon.is_invalid()
+            && draw_icon_high_quality_argb(
+                bits,
+                w,
+                h,
+                hdc,
+                icon,
+                slot_cx - size / 2,
+                slot_cy - size / 2,
+                size,
+            )
+        {
+            // Composited smoothly with premultiplied ARGB
+        } else {
+            draw_dock_icon(hdc, id, slot_cx, slot_cy, size, accessible);
+            ensure_dib_alpha(
+                bits,
+                w,
+                h,
+                slot_cx - size / 2,
+                slot_cy - size / 2,
+                size,
+                size,
+            );
+        }
 
         if dock_item_running(*item_id) {
-            if active {
-                let dot_col = if accessible { 0xffff00 } else { 0x38bdf8 };
-                let pill_r = RECT {
-                    left: slot_cx - 6,
-                    top: 47,
-                    right: slot_cx + 6,
-                    bottom: 50,
-                };
-                fill_rounded_box_argb(bits, w, h, &pill_r, 1.5, dot_col, 255);
+            let dot_col = if accessible {
+                0xffff00
+            } else if active {
+                0xffffff
             } else {
-                let dot_col = if accessible { 0xffffff } else { 0x94a3b8 };
-                let dot_r = RECT {
-                    left: slot_cx - 3,
-                    top: 47,
-                    right: slot_cx + 3,
-                    bottom: 50,
-                };
-                fill_rounded_box_argb(bits, w, h, &dot_r, 1.5, dot_col, 255);
-            }
+                0xcbd5e1
+            };
+            fill_circle_argb(bits, w, h, slot_cx as f32, dot_cy, 2.2, dot_col, 245);
         }
 
         x += c.spacing;
@@ -2808,97 +2172,93 @@ unsafe fn paint_dock(hwnd: HWND, screen_dc: HDC) {
         let sep_color = if accessible {
             0x808080
         } else if c.dark {
-            0x39424f
+            0x3f434e
         } else {
-            0xdbe3ec
+            0xcbd5e1
         };
         let sep_rect = RECT {
-            left: x - 1,
-            top: 13,
+            left: x,
+            top: 12,
             right: x + 1,
-            bottom: 45,
+            bottom: (h - 12).max(20),
         };
-        fill_rounded_box_argb(bits, w, h, &sep_rect, 1.0, sep_color, 200);
+        fill_rounded_box_argb(bits, w, h, &sep_rect, 0.5, sep_color, 180);
     }
 
     let base_index = 5usize;
     for (pindex, target) in pinned_dock_items().iter().enumerate().take(10) {
         let index = base_index + pindex;
         let slot_cx = x + c.spacing / 2;
-        let slot_cy = 26;
 
-        let distance = if DOCK_POINTER_X >= 0 {
-            (DOCK_POINTER_X - slot_cx).abs()
-        } else {
-            i32::MAX
-        };
-        let influence = ((110 - distance).max(0) as f32 / 110.0)
-            * DOCK_MAGNIFICATION
-            * (c.magnification as f32 / 45.0);
+        let influence = cosmic_magnification_factor(
+            DOCK_POINTER_X,
+            slot_cx,
+            DOCK_MAGNIFICATION,
+            c.magnification,
+        );
         let size = c.icon_size + (c.icon_size as f32 * 0.45 * influence) as i32;
         let active = pinned_target_active(target);
 
         if HOVERED_DOCK_ICON == index as i32 || active {
-            let hl_col = if accessible {
-                if HOVERED_DOCK_ICON == index as i32 {
-                    0xffff00
-                } else {
-                    0x404040
-                }
+            let (hl_col, hl_alpha) = if accessible {
+                (0xffff00, 180)
             } else if c.dark {
                 if HOVERED_DOCK_ICON == index as i32 {
-                    0x333d4e
+                    (0xffffff, 34)
                 } else {
-                    0x283243
+                    (0xffffff, 24)
                 }
             } else {
-                if HOVERED_DOCK_ICON == index as i32 {
-                    0xe2e8f0
-                } else {
-                    0xdbeafe
-                }
+                (0x0f172a, 24)
             };
-            let half_box = (c.spacing - 8).min(44) / 2;
-            let box_rect = RECT {
-                left: slot_cx - half_box,
-                top: 5,
-                right: slot_cx + half_box,
-                bottom: 53,
-            };
-            fill_rounded_box_argb(bits, w, h, &box_rect, 10.0, hl_col, 220);
+            fill_circle_argb(
+                bits,
+                w,
+                h,
+                slot_cx as f32,
+                (h as f32) * 0.5,
+                halo_radius,
+                hl_col,
+                hl_alpha,
+            );
         }
 
-        let _ = draw_shell_icon(hdc, target, slot_cx - size / 2, slot_cy - size / 2, size);
-        ensure_dib_alpha(
-            bits,
-            w,
-            h,
-            slot_cx - size / 2,
-            slot_cy - size / 2,
-            size,
-            size,
-        );
+        let icon = high_res_icon_for_path(target);
+        if !icon.is_invalid()
+            && draw_icon_high_quality_argb(
+                bits,
+                w,
+                h,
+                hdc,
+                icon,
+                slot_cx - size / 2,
+                slot_cy - size / 2,
+                size,
+            )
+        {
+            // Smooth area-downsampled 256x256 icon
+        } else {
+            let _ = draw_shell_icon(hdc, target, slot_cx - size / 2, slot_cy - size / 2, size);
+            ensure_dib_alpha(
+                bits,
+                w,
+                h,
+                slot_cx - size / 2,
+                slot_cy - size / 2,
+                size,
+                size,
+            );
+        }
 
         if pinned_target_running(target) {
-            if active {
-                let dot_col = if accessible { 0xffff00 } else { 0x38bdf8 };
-                let pill_r = RECT {
-                    left: slot_cx - 6,
-                    top: 47,
-                    right: slot_cx + 6,
-                    bottom: 50,
-                };
-                fill_rounded_box_argb(bits, w, h, &pill_r, 1.5, dot_col, 255);
+            let dot_col = if accessible {
+                0xffff00
+            } else if active {
+                0xffffff
             } else {
-                let dot_col = if accessible { 0xffffff } else { 0x94a3b8 };
-                let dot_r = RECT {
-                    left: slot_cx - 3,
-                    top: 47,
-                    right: slot_cx + 3,
-                    bottom: 50,
-                };
-                fill_rounded_box_argb(bits, w, h, &dot_r, 1.5, dot_col, 255);
-            }
+                0xcbd5e1
+            };
+            fill_circle_argb(bits, w, h, slot_cx as f32, dot_cy, 2.2, dot_col, 245);
         }
 
         x += c.spacing;
@@ -2908,51 +2268,55 @@ unsafe fn paint_dock(hwnd: HWND, screen_dc: HDC) {
     for (windex, window) in dynamic_dock_windows().iter().enumerate() {
         let index = dynamic_base + windex;
         let slot_cx = x + c.spacing / 2;
-        let slot_cy = 26;
 
-        let distance = if DOCK_POINTER_X >= 0 {
-            (DOCK_POINTER_X - slot_cx).abs()
-        } else {
-            i32::MAX
-        };
-        let influence = ((110 - distance).max(0) as f32 / 110.0)
-            * DOCK_MAGNIFICATION
-            * (c.magnification as f32 / 45.0);
+        let influence = cosmic_magnification_factor(
+            DOCK_POINTER_X,
+            slot_cx,
+            DOCK_MAGNIFICATION,
+            c.magnification,
+        );
         let size = c.icon_size + (c.icon_size as f32 * 0.45 * influence) as i32;
         let active = GetForegroundWindow() == *window;
 
         if HOVERED_DOCK_ICON == index as i32 || active {
-            let hl_col = if accessible {
-                if HOVERED_DOCK_ICON == index as i32 {
-                    0xffff00
-                } else {
-                    0x404040
-                }
+            let (hl_col, hl_alpha) = if accessible {
+                (0xffff00, 180)
             } else if c.dark {
                 if HOVERED_DOCK_ICON == index as i32 {
-                    0x333d4e
+                    (0xffffff, 34)
                 } else {
-                    0x283243
+                    (0xffffff, 24)
                 }
             } else {
-                if HOVERED_DOCK_ICON == index as i32 {
-                    0xe2e8f0
-                } else {
-                    0xdbeafe
-                }
+                (0x0f172a, 24)
             };
-            let half_box = (c.spacing - 8).min(44) / 2;
-            let box_rect = RECT {
-                left: slot_cx - half_box,
-                top: 5,
-                right: slot_cx + half_box,
-                bottom: 53,
-            };
-            fill_rounded_box_argb(bits, w, h, &box_rect, 10.0, hl_col, 220);
+            fill_circle_argb(
+                bits,
+                w,
+                h,
+                slot_cx as f32,
+                (h as f32) * 0.5,
+                halo_radius,
+                hl_col,
+                hl_alpha,
+            );
         }
 
         let icon = window_high_res_icon(*window);
-        if !icon.is_invalid() {
+        if !icon.is_invalid()
+            && draw_icon_high_quality_argb(
+                bits,
+                w,
+                h,
+                hdc,
+                icon,
+                slot_cx - size / 2,
+                slot_cy - size / 2,
+                size,
+            )
+        {
+            // High-resolution 256x256 running app icon composited smoothly
+        } else if !icon.is_invalid() {
             let _ = DrawIconEx(
                 hdc,
                 slot_cx - size / 2,
@@ -2963,6 +2327,15 @@ unsafe fn paint_dock(hwnd: HWND, screen_dc: HDC) {
                 0,
                 None,
                 DI_NORMAL,
+            );
+            ensure_dib_alpha(
+                bits,
+                w,
+                h,
+                slot_cx - size / 2,
+                slot_cy - size / 2,
+                size,
+                size,
             );
         } else {
             let mut pid = 0u32;
@@ -2979,36 +2352,25 @@ unsafe fn paint_dock(hwnd: HWND, screen_dc: HDC) {
             } else {
                 draw_process_tile(hdc, &label, slot_cx, slot_cy, size, accessible);
             }
+            ensure_dib_alpha(
+                bits,
+                w,
+                h,
+                slot_cx - size / 2,
+                slot_cy - size / 2,
+                size,
+                size,
+            );
         }
-        ensure_dib_alpha(
-            bits,
-            w,
-            h,
-            slot_cx - size / 2,
-            slot_cy - size / 2,
-            size,
-            size,
-        );
 
-        if active {
-            let dot_col = if accessible { 0xffff00 } else { 0x38bdf8 };
-            let pill_r = RECT {
-                left: slot_cx - 6,
-                top: 47,
-                right: slot_cx + 6,
-                bottom: 50,
-            };
-            fill_rounded_box_argb(bits, w, h, &pill_r, 1.5, dot_col, 255);
+        let dot_col = if accessible {
+            0xffff00
+        } else if active {
+            0xffffff
         } else {
-            let dot_col = if accessible { 0xffffff } else { 0x94a3b8 };
-            let dot_r = RECT {
-                left: slot_cx - 3,
-                top: 47,
-                right: slot_cx + 3,
-                bottom: 50,
-            };
-            fill_rounded_box_argb(bits, w, h, &dot_r, 1.5, dot_col, 255);
-        }
+            0xcbd5e1
+        };
+        fill_circle_argb(bits, w, h, slot_cx as f32, dot_cy, 2.2, dot_col, 245);
 
         x += c.spacing;
     }
@@ -4902,10 +4264,11 @@ extern "system" fn panel_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRE
                 let _ = ScreenToClient(hwnd, &mut point);
                 let mut client = RECT::default();
                 let _ = GetClientRect(hwnd, &mut client);
-                let tray_w = tray_total_width();
-                let is_tray = point.x >= client.right - 78 - tray_w && point.x < client.right - 78;
-                let interactive = (10..175).contains(&point.x)
-                    || point.x > client.right - 74
+                let is_tray = panel_tray_bounds(hwnd)
+                    .map(|(tl, tr)| point.x >= tl - 28 && point.x < tr)
+                    .unwrap_or(false);
+                let interactive = (10..156).contains(&point.x)
+                    || point.x > client.right - 68
                     || is_tray
                     || panel_applet_at(hwnd, point.x).is_some();
                 if interactive {
@@ -4925,27 +4288,36 @@ extern "system" fn panel_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRE
                 let x = (l.0 as u32 & 0xffff) as i32;
                 let mut client = RECT::default();
                 let _ = GetClientRect(hwnd, &mut client);
-                if (10..76).contains(&x) {
-                    show_launcher();
-                } else if (78..174).contains(&x) {
+                if (12..118).contains(&x) {
                     position_popup_on_monitor(
                         SWITCHER,
                         MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
                     );
                     show_switcher();
-                } else if x >= client.right - 38 {
+                } else if (118..154).contains(&x) {
+                    show_launcher();
+                } else if x >= client.right - 36 {
                     let mut pt = POINT {
                         x: client.right - 180,
                         y: client.bottom + 4,
                     };
                     let _ = ClientToScreen(hwnd, &mut pt);
                     show_power_menu(hwnd, pt.x, pt.y);
-                } else if x >= client.right - 74 && x < client.right - 38 {
+                } else if x >= client.right - 68 && x < client.right - 36 {
                     position_popup_on_monitor(
                         SETTINGS,
                         MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
                     );
                     show_luma_settings();
+                } else if panel_tray_bounds(hwnd)
+                    .map(|(tl, _)| x >= tl - 28 && x < tl)
+                    .unwrap_or(false)
+                {
+                    position_popup_on_monitor(
+                        SWITCHER,
+                        MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+                    );
+                    show_switcher();
                 } else if let Some(idx) = tray_icon_at_x(hwnd, x) {
                     if let Some(item) = TRAY_ICONS.get(idx) {
                         PostMessageW(

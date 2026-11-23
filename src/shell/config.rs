@@ -31,6 +31,10 @@ pub struct Config {
     pub applet_order: [u8; 7],
     pub panel_zones: [u8; 7],
     pub dock_order: [u8; 5],
+    pub accent_color: u32,
+    pub wallpaper_style: u8,
+    pub adaptive_dock_transparency: bool,
+    pub panel_transparent: bool,
 }
 
 pub fn config_path() -> PathBuf {
@@ -208,14 +212,23 @@ pub fn load_config() -> Config {
                     }
                 }
                 "auto_hide" => c.auto_hide = v == "true",
-                "icon_size" => c.icon_size = v.parse().unwrap_or(36).clamp(24, 64),
-                "magnification" => c.magnification = v.parse().unwrap_or(35).clamp(0, 100) as u8,
-                "transparency" => c.transparency = v.parse().unwrap_or(238).clamp(120, 255) as u8,
-                "spacing" => c.spacing = v.parse().unwrap_or(50).clamp(36, 96),
+                "icon_size" => c.icon_size = v.parse().unwrap_or(42).clamp(24, 64),
+                "magnification" => c.magnification = v.parse().unwrap_or(32).clamp(0, 100) as u8,
+                "transparency" => c.transparency = v.parse().unwrap_or(148).clamp(40, 230) as u8,
+                "spacing" => c.spacing = v.parse().unwrap_or(56).clamp(36, 96),
                 "offset_x" => c.offset_x = v.parse().unwrap_or(0).clamp(-200, 200),
                 "offset_y" => c.offset_y = v.parse().unwrap_or(0).clamp(-100, 100),
                 "clock_24h" => c.clock_24h = v == "true",
                 "desktop" => c.desktop_enabled = v == "true",
+                "adaptive_dock_transparency" => c.adaptive_dock_transparency = v == "true",
+                "panel_style" => c.panel_transparent = v == "transparent",
+                "accent_color" => {
+                    let clean = v.trim().trim_start_matches('#');
+                    if let Ok(parsed) = u32::from_str_radix(clean, 16) {
+                        c.accent_color = parsed & 0x00FF_FFFF;
+                    }
+                }
+                "wallpaper_style" => c.wallpaper_style = v.parse().unwrap_or(0).min(4),
                 "date_format" => {
                     c.date_format = match v {
                         "none" => 0,
@@ -234,11 +247,14 @@ pub fn load_config() -> Config {
             return default_config();
         }
         if version < 9 {
-            // v9 slims the dock to modern sleek proportions (58px height, 50px spacing, 36px icons)
-            c.icon_size = 36;
-            c.magnification = 25;
-            c.transparency = 245;
-            c.spacing = 50;
+            // Upgrade legacy config to COSMIC Orbital defaults (42px icons, 56px spacing, 148 translucent glass)
+            c.icon_size = 42;
+            c.magnification = 32;
+            c.transparency = 148;
+            c.spacing = 56;
+            c.adaptive_dock_transparency = true;
+            c.panel_transparent = true;
+            c.panel_zones = [1, 2, 2, 2, 2, 2, 0];
         }
     }
     c
@@ -251,7 +267,7 @@ pub fn save_config() {
         DockPosition::Center => "center",
     };
     let text = format!(
-        "version={}\ndark={}\ndesktop={}\nclock={}\nnetwork={}\nvolume={}\nbattery={}\nnotifications={}\nbluetooth={}\nmedia={}\nposition={}\nauto_hide={}\nicon_size={}\nmagnification={}\ntransparency={}\nspacing={}\noffset_x={}\noffset_y={}\nclock_24h={}\ndate_format={}\norder={}\nzones={}\ndock_order={}\n",
+        "version={}\ndark={}\ndesktop={}\nclock={}\nnetwork={}\nvolume={}\nbattery={}\nnotifications={}\nbluetooth={}\nmedia={}\nposition={}\nauto_hide={}\nicon_size={}\nmagnification={}\ntransparency={}\nspacing={}\noffset_x={}\noffset_y={}\nclock_24h={}\ndate_format={}\norder={}\nzones={}\ndock_order={}\naccent_color=#{:06x}\nwallpaper_style={}\nadaptive_dock_transparency={}\npanel_style={}\n",
         super::CURRENT_CONFIG_VERSION,
         c.dark,
         c.desktop_enabled,
@@ -278,7 +294,11 @@ pub fn save_config() {
         },
         order_text(c.applet_order),
         zones_text(c.panel_zones),
-        dock_order_text(c.dock_order)
+        dock_order_text(c.dock_order),
+        c.accent_color & 0x00FF_FFFF,
+        c.wallpaper_style,
+        c.adaptive_dock_transparency,
+        if c.panel_transparent { "transparent" } else { "full" }
     );
     if let Some(parent) = config_path().parent() {
         let _ = fs::create_dir_all(parent);
@@ -348,18 +368,22 @@ pub fn default_config() -> Config {
         show_media: true,
         position: DockPosition::Center,
         auto_hide: false,
-        icon_size: 36,
-        magnification: 25,
-        transparency: 245,
-        spacing: 50,
+        icon_size: 42,
+        magnification: 32,
+        transparency: 148,
+        spacing: 56,
         offset_x: 0,
         offset_y: 0,
         clock_24h: false,
         date_format: 1,
         desktop_enabled: true,
-        applet_order: [0, 1, 2, 3, 4, 5, 6],
-        panel_zones: [2, 2, 2, 2, 2, 2, 2],
+        applet_order: [0, 6, 1, 2, 3, 4, 5],
+        panel_zones: [1, 2, 2, 2, 2, 2, 0],
         dock_order: [0, 1, 2, 3, 4],
+        accent_color: 0x38bdf8,
+        wallpaper_style: 0,
+        adaptive_dock_transparency: true,
+        panel_transparent: true,
     }
 }
 
@@ -374,16 +398,20 @@ pub static mut CONFIG: Config = Config {
     show_media: true,
     position: DockPosition::Center,
     auto_hide: false,
-    icon_size: 36,
-    magnification: 25,
-    transparency: 245,
-    spacing: 50,
+    icon_size: 42,
+    magnification: 32,
+    transparency: 148,
+    spacing: 56,
     offset_x: 0,
     offset_y: 0,
     clock_24h: false,
     date_format: 1,
     desktop_enabled: true,
-    applet_order: [0, 1, 2, 3, 4, 5, 6],
-    panel_zones: [2, 2, 2, 2, 2, 2, 2],
+    applet_order: [0, 6, 1, 2, 3, 4, 5],
+    panel_zones: [1, 2, 2, 2, 2, 2, 0],
     dock_order: [0, 1, 2, 3, 4],
+    accent_color: 0x38bdf8,
+    wallpaper_style: 0,
+    adaptive_dock_transparency: true,
+    panel_transparent: true,
 };

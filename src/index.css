@@ -1,0 +1,82 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-display: 'Plus Jakarta Sans', 'Segoe UI Variable Display', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-sans: 'DM Sans', 'Segoe UI Variable Text', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Cascadia Code', ui-monospace, SFMono-Regular, monospace;
+    --cosmic-accent: #38bdf8;
+    --cosmic-accent-rgb: 56, 189, 248;
+    --cosmic-font-scale: 1;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-synthesis: none;
+    font-size: calc(16px * var(--cosmic-font-scale, 1));
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+    letter-spacing: -0.015em;
+  }
+
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  input[type="range"],
+  input[type="checkbox"] {
+    accent-color: var(--cosmic-accent);
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.cosmic-accent-text {
+  color: var(--cosmic-accent);
+}
+
+.cosmic-accent-bg {
+  background-color: var(--cosmic-accent);
+}
+
+.cosmic-accent-soft {
+  background-color: rgba(var(--cosmic-accent-rgb), 0.16);
+  color: var(--cosmic-accent);
+  border-color: rgba(var(--cosmic-accent-rgb), 0.38);
+}
+
+.cosmic-accent-border {
+  border-color: rgba(var(--cosmic-accent-rgb), 0.48);
+}
+
+/* Custom subtle scrollbars for COSMIC settings & code drawers */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.28);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.48);
+}

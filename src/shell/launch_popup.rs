@@ -26,6 +26,7 @@ pub(crate) extern "system" fn launcher_proc(hwnd: HWND, msg: u32, w: WPARAM, l: 
                     WPARAM(1),
                     LPARAM(cue.as_ptr() as isize),
                 );
+                apply_control_font(LAUNCHER_EDIT);
                 LRESULT(0)
             }
             WM_PAINT => {
