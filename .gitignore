@@ -1,1 +1,26 @@
-/target
+# Rust build output
+/target/
+
+# Runtime logs and generated shell state
+*.log
+*.bak
+settings.ini
+favorites.txt
+recent.txt
+
+# Windows build/runtime artifacts
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.obj
+*.lib
+*.exp
+
+# Generated release metadata
+/dist/LumaShell/SHA256SUMS.txt
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store

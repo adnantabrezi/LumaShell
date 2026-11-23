@@ -8,6 +8,7 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Devices_Bluetooth",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
     "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
@@ -37,8 +38,10 @@ windows = { version = "0.58", features = [
     "Media_Control",
 ] }
 
+[dependencies]
+# Prototype: iced + wgpu powered COSMIC-style surfaces (separate binary: luma_iced)
+iced = { version = "0.13", features = ["wgpu", "tokio", "advanced"] }
+png = "0.17"
+
 [profile.release]
-strip = true
-panic = "abort"
-codegen-units = 1
-opt-level = "z"
+opt-level = 2

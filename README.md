@@ -4,13 +4,13 @@ Luma is a native Windows 11 shell surface with a macOS/COSMIC-inspired floating 
 
 ## Current product surface
 
-- Floating dock with Home, Files, Terminal, Browser, Mail, and Settings launchers.
-- High-resolution native icons for dock launchers resolved from system binaries (`imageres.dll`, `shell32.dll`, `explorer.exe`, `wt.exe`, `msedge.exe`, `SystemSettings.exe`, user profile) via `SHGetFileInfoW` and `ExtractIconExW`, rendered with `DrawIconEx`.
+- Floating dock with Home, Files, Terminal, Browser, and Settings launchers, plus user-pinned apps and running windows.
+- High-resolution native icons for dock launchers resolved from system binaries (`imageres.dll`, `shell32.dll`, `explorer.exe`, `wt.exe`, `msedge.exe`, `SystemSettings.exe`, user profile) via `PrivateExtractIconsW`, `SHGetImageList`, and `SHGetFileInfoW`, rendered with `DrawIconEx`.
 - Modern squircle colored rounded tiles with Segoe Fluent Icons and MDL2 Assets vector glyph fallbacks.
 - Complete Windows shell replacement integration:
   - Registers as the official shell window via `SetShellWindow` and listens to `RegisterShellHookWindow` (`WM_SHELLHOOK`) for instant dock window lifecycle updates.
   - Low-level keyboard hook (`WH_KEYBOARD_LL`) enables solo Windows key tap to toggle the Application Launcher without interfering with Windows combination shortcuts.
-  - Dedicated desktop background window (`LumaDesktop`) pinned at `HWND_BOTTOM` rendering Windows wallpaper (`SPI_GETDESKWALLPAPER`) or gradient, with full right-click context menu (Terminal, Files, Launcher, Switcher, Display Settings, Personalization, Settings, Power actions, Restore Explorer).
+  - Dedicated desktop background window (`LumaDesktop`) pinned at `HWND_BOTTOM` rendering Windows wallpaper (`SPI_GETDESKWALLPAPER`) through WIC (JPG, PNG, GIF, TIFF, and BMP) or a gradient fallback, with automatic wallpaper refresh and a full right-click context menu (Terminal, Files, Launcher, Switcher, Take Screenshot, Display Settings, Personalization, Settings, Power actions, Restore Explorer).
   - Integrated Power & Session menu in top panel with Lock, Sign Out, Sleep, Restart, and Shut Down (`LockWorkStation`, `ExitWindowsEx`).
   - In-GUI shell replacement toggle in Settings Recovery page ("Set Luma as Default Shell" / "Restore Windows Explorer") managing `HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon\Shell`.
 - Top panel with Luma identity pill (`\u{E707}`), Activities affordance pill (`\u{E7C4}`), modular applets, and dedicated Settings (`\u{E713}`) and Power (`\u{E7E8}`) buttons.
@@ -20,23 +20,25 @@ Luma is a native Windows 11 shell surface with a macOS/COSMIC-inspired floating 
 - Settings window for dark/light theme, desktop wallpaper & context menu toggle, dock position, applet visibility, 12/24-hour time, `none`/`short`/`long` date formats, and a per-user “Start with Windows” toggle.
 - Settings is organized into General, Dock, Applets, and Recovery pages with a vertical sidebar and native keyboard-focusable navigation buttons.
 - Dock customization includes auto-hide, small/medium/large icon sizes, magnification strength, transparency, spacing, and x/y position offsets; values are range-validated and persisted.
-- Dock launchers can be drag-reordered and the order persists in Settings as `home,files,terminal,browser,mail,settings`.
-- Settings persist to `%APPDATA%\LumaShell\settings.ini`, with validation, schema version `7`, atomic replacement, and a `.bak` recovery copy; unknown future versions fall back to safe defaults.
+- Dock launchers can be drag-reordered and the order persists in Settings as `home,files,terminal,browser,settings`.
+- Settings persist to `%APPDATA%\LumaShell\settings.ini`, with validation, schema version `8`, atomic replacement, and a `.bak` recovery copy; unknown future versions fall back to safe defaults.
 - Dock positions: left, center, and right.
 - Applications panel indexes `.lnk`, `.url`, and `.exe` entries from both user and system Start Menu folders, exposes curated Wi-Fi/sound/display/Bluetooth/notification/personalization/update Settings destinations, and filters them live as you type.
 - The launcher index refreshes periodically while the shell is running, so newly installed or removed Start Menu applications appear without restarting Luma.
 - Launcher queries of two or more characters also perform a bounded filename search across Desktop, Documents, and Downloads.
 - Launcher results support Up/Down/Home/End/Page Up/Page Down/Enter/Escape keyboard navigation, keep a capped recent-launch list in `%APPDATA%\LumaShell\recent.txt`, and support persistent favorites in `%APPDATA%\LumaShell\favorites.txt` via Ctrl+D or right-click.
 - Launcher rows resolve native Windows icons for applications, Settings destinations, and matching files; favorites retain a visible star marker.
-- Dock indicators are derived from visible top-level windows and matched to common Explorer, terminal, browser, mail, and Settings processes instead of fixed placeholder dots.
+- Dock indicators are derived from visible top-level windows and matched to common Explorer, terminal, browser, and Settings processes instead of fixed placeholder dots.
 - The foreground window's matching dock launcher receives a distinct active highlight, separate from hover feedback.
 - Clicking a launcher’s running indicator restores and activates that launcher’s matching window.
 - Dock indicators refresh twice per second as windows appear, close, minimize, or restore.
 - Clicking a running dock launcher activates or restores its existing window; clicking the active window minimizes it instead of launching a duplicate.
 - The dock supports keyboard-only navigation with Left/Right/Home/End, Enter, and Escape after opening it with `Win + Alt + Space`; the launcher and window switcher also support Home/End and page jumps.
 - `Win + Tab` opens a window switcher listing visible application windows and activating the selected one.
+- `Win + E` launches File Explorer (`explorer.exe`).
 - `Win + Alt + Left/Right` forwards the native `Win + Ctrl + Left/Right` shortcuts for switching Windows virtual desktops without taking over the system Alt-Tab chord.
 - `Win + Alt + Shift + Left/Right` forwards the native `Win + Ctrl + Shift + Left/Right` shortcuts to move the active window between adjacent virtual desktops; registration failures are logged rather than overriding another shortcut.
+- `Print Screen` opens Luma's snipping overlay: drag to select a region, then the PNG is saved to `%USERPROFILE%\Pictures\Luma Screenshots`, copied to the clipboard as both `CF_BITMAP` and `CF_DIB`, and confirmed by a toast. Right-click or `Esc` cancels.
 - Window enumeration is virtual-desktop aware through `IVirtualDesktopManager`, so switcher entries and running indicators are scoped to the current Windows workspace.
 - The switcher renders a live DWM thumbnail for the selected window and supports Up/Down/Enter/Escape selection.
 - Windows-only runtime boundary with a clean non-Windows fallback.
@@ -111,3 +113,9 @@ For an explicit, opt-in shell replacement with rollback protection, use `-Replac
 Remove the startup registration with `.\installer\uninstall.ps1`; it also invokes the Explorer recovery script before removing the install files.
 
 The shell does not replace `explorer.exe` automatically. Keep it opt-in during development. The current implementation still needs richer workspace switching, true system Alt-Tab integration, UI Automation metadata for custom surfaces, certificate-backed release signing, and an end-to-end Windows GUI recovery test before broad distribution.
+
+## Roadmap / TODOs
+
+- [ ] **Bluetooth Audio Connection**: Fix click-to-connect for paired Bluetooth audio devices (such as wireless earbuds/headphones) by passing a valid radio handle from `BluetoothFindFirstRadio` and enabling the `AudioSink` (`0x0000110B-0000-1000-8000-00805F9B34FB`) and `Handsfree` (`0x0000111E-0000-1000-8000-00805F9B34FB`) service GUIDs via `BluetoothSetServiceState`, with asynchronous thread execution and WinRT Bluetooth audio endpoint fallback.
+- [ ] **Native Fullscreen App Detection**: Continuously monitor display work areas to auto-hide the top panel and floating dock whenever media players, browsers (YouTube/HTML5), and borderless games enter fullscreen, instantly restoring them on exit.
+
