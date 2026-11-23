@@ -101,6 +101,7 @@ pub(crate) unsafe fn show_audio_mixer() {
     if !TRAY_POPUP.0.is_null() && IsWindowVisible(TRAY_POPUP).as_bool() {
         ShowWindow(TRAY_POPUP, SW_HIDE);
     }
+    tiling_popup::hide_tiling_popup();
     AUDIO_MIXER_SELECTION = 0;
     let mut cursor = POINT::default();
     GetCursorPos(&mut cursor);
@@ -553,6 +554,7 @@ pub(crate) unsafe fn show_network_popup() {
     if !TRAY_POPUP.0.is_null() && IsWindowVisible(TRAY_POPUP).as_bool() {
         ShowWindow(TRAY_POPUP, SW_HIDE);
     }
+    tiling_popup::hide_tiling_popup();
 
     refresh_wifi_networks();
     NETWORK_POPUP_SELECTION = 0;
@@ -610,6 +612,10 @@ pub(crate) unsafe fn show_bluetooth_popup() {
     if !AUDIO_MIXER.0.is_null() && IsWindowVisible(AUDIO_MIXER).as_bool() {
         ShowWindow(AUDIO_MIXER, SW_HIDE);
     }
+    if !TRAY_POPUP.0.is_null() && IsWindowVisible(TRAY_POPUP).as_bool() {
+        ShowWindow(TRAY_POPUP, SW_HIDE);
+    }
+    tiling_popup::hide_tiling_popup();
 
     refresh_bluetooth_devices();
     BLUETOOTH_POPUP_SELECTION = 0;
@@ -672,9 +678,7 @@ pub(crate) unsafe fn show_tray_popup() {
     if !AUDIO_MIXER.0.is_null() && IsWindowVisible(AUDIO_MIXER).as_bool() {
         ShowWindow(AUDIO_MIXER, SW_HIDE);
     }
-    if !TRAY_POPUP.0.is_null() && IsWindowVisible(TRAY_POPUP).as_bool() {
-        ShowWindow(TRAY_POPUP, SW_HIDE);
-    }
+    tiling_popup::hide_tiling_popup();
 
     TRAY_ICONS.retain(|it| IsWindow(it.hwnd).as_bool());
     let item_count = TRAY_ICONS.len();

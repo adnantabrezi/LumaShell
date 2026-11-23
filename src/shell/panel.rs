@@ -398,6 +398,15 @@ pub(crate) unsafe fn is_tray_chevron_at_x(hwnd: HWND, x: i32) -> bool {
     x >= tray_left && x < tray_left + 22
 }
 
+pub(crate) unsafe fn is_tiling_button_at_x(hwnd: HWND, x: i32) -> bool {
+    let Some((tray_left, _)) = panel_tray_bounds(hwnd) else {
+        return false;
+    };
+    let tile_right = tray_left - 30;
+    let tile_left = tile_right - 26;
+    x >= tile_left && x < tile_right
+}
+
 #[repr(C)]
 #[allow(non_snake_case)]
 pub(crate) struct COPYDATASTRUCT {
@@ -576,6 +585,38 @@ pub(crate) unsafe fn paint_panel(hwnd: HWND, screen_dc: HDC) {
     let tray_right = r.right - 68 - right_applets_w - 6;
     let total_tray_w = tray_total_width();
     let tray_left = tray_right - total_tray_w;
+
+    // COSMIC Tiling Mode glyph immediately left of "US" (mirrors COSMIC top panel Tiling Applet)
+    let tiling_active = tiling::is_tiling_enabled();
+    let tile_pill = RECT {
+        left: tray_left - 56,
+        top: 7,
+        right: tray_left - 32,
+        bottom: 31,
+    };
+    if tiling_active {
+        let tile_bg = brush(if accessible {
+            0x333333
+        } else if c.panel_transparent {
+            0x273042
+        } else if c.dark {
+            0x1e293b
+        } else {
+            0xe2e8f0
+        });
+        fill_round_rect(hdc, &tile_pill, tile_bg, 8);
+        let _ = DeleteObject(tile_bg);
+        if !accessible {
+            stroke_round_rect(hdc, &tile_pill, c.accent_color, 1, 8);
+        }
+    }
+    let tiling_glyph = if tiling_active { "\u{F0E2}" } else { "\u{E8A9}" };
+    let tiling_col = if tiling_active {
+        if accessible { fg_col } else { c.accent_color }
+    } else {
+        muted_col
+    };
+    icon_text(hdc, tiling_glyph, tray_left - 51, 11, tiling_col, 13);
 
     // Keyboard layout indicator "US" immediately left of system tray icons
     text(hdc, "US", tray_left - 26, 11, fg_col, 12);

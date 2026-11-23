@@ -35,6 +35,12 @@ pub struct Config {
     pub wallpaper_style: u8,
     pub adaptive_dock_transparency: bool,
     pub panel_transparent: bool,
+    pub tiling_enabled: bool,
+    pub tiling_vertical: bool,
+    pub tiling_inner_gap: i32,
+    pub tiling_outer_gap: i32,
+    pub tiling_active_hint: bool,
+    pub tiling_animation_ms: u32,
 }
 
 pub fn config_path() -> PathBuf {
@@ -239,6 +245,14 @@ pub fn load_config() -> Config {
                 "order" => c.applet_order = parse_order(v),
                 "zones" => c.panel_zones = parse_zones(v),
                 "dock_order" => c.dock_order = parse_dock_order(v),
+                "tiling_enabled" => c.tiling_enabled = v == "true",
+                "tiling_direction" => c.tiling_vertical = v == "vertical",
+                "tiling_inner_gap" => c.tiling_inner_gap = v.parse().unwrap_or(10).clamp(0, 24),
+                "tiling_outer_gap" => c.tiling_outer_gap = v.parse().unwrap_or(12).clamp(0, 24),
+                "tiling_active_hint" => c.tiling_active_hint = v == "true",
+                "tiling_animation_ms" => {
+                    c.tiling_animation_ms = v.parse().unwrap_or(240).clamp(0, 500)
+                }
                 _ => {}
             }
         }
@@ -267,7 +281,7 @@ pub fn save_config() {
         DockPosition::Center => "center",
     };
     let text = format!(
-        "version={}\ndark={}\ndesktop={}\nclock={}\nnetwork={}\nvolume={}\nbattery={}\nnotifications={}\nbluetooth={}\nmedia={}\nposition={}\nauto_hide={}\nicon_size={}\nmagnification={}\ntransparency={}\nspacing={}\noffset_x={}\noffset_y={}\nclock_24h={}\ndate_format={}\norder={}\nzones={}\ndock_order={}\naccent_color=#{:06x}\nwallpaper_style={}\nadaptive_dock_transparency={}\npanel_style={}\n",
+        "version={}\ndark={}\ndesktop={}\nclock={}\nnetwork={}\nvolume={}\nbattery={}\nnotifications={}\nbluetooth={}\nmedia={}\nposition={}\nauto_hide={}\nicon_size={}\nmagnification={}\ntransparency={}\nspacing={}\noffset_x={}\noffset_y={}\nclock_24h={}\ndate_format={}\norder={}\nzones={}\ndock_order={}\naccent_color=#{:06x}\nwallpaper_style={}\nadaptive_dock_transparency={}\npanel_style={}\ntiling_enabled={}\ntiling_direction={}\ntiling_inner_gap={}\ntiling_outer_gap={}\ntiling_active_hint={}\ntiling_animation_ms={}\n",
         super::CURRENT_CONFIG_VERSION,
         c.dark,
         c.desktop_enabled,
@@ -298,7 +312,13 @@ pub fn save_config() {
         c.accent_color & 0x00FF_FFFF,
         c.wallpaper_style,
         c.adaptive_dock_transparency,
-        if c.panel_transparent { "transparent" } else { "full" }
+        if c.panel_transparent { "transparent" } else { "full" },
+        c.tiling_enabled,
+        if c.tiling_vertical { "vertical" } else { "horizontal" },
+        c.tiling_inner_gap,
+        c.tiling_outer_gap,
+        c.tiling_active_hint,
+        c.tiling_animation_ms
     );
     if let Some(parent) = config_path().parent() {
         let _ = fs::create_dir_all(parent);
@@ -384,6 +404,12 @@ pub fn default_config() -> Config {
         wallpaper_style: 0,
         adaptive_dock_transparency: true,
         panel_transparent: true,
+        tiling_enabled: true,
+        tiling_vertical: false,
+        tiling_inner_gap: 10,
+        tiling_outer_gap: 12,
+        tiling_active_hint: true,
+        tiling_animation_ms: 240,
     }
 }
 
@@ -414,4 +440,10 @@ pub static mut CONFIG: Config = Config {
     wallpaper_style: 0,
     adaptive_dock_transparency: true,
     panel_transparent: true,
+    tiling_enabled: true,
+    tiling_vertical: false,
+    tiling_inner_gap: 10,
+    tiling_outer_gap: 12,
+    tiling_active_hint: true,
+    tiling_animation_ms: 240,
 };

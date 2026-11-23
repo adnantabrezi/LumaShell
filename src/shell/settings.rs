@@ -565,7 +565,7 @@ pub(crate) extern "system" fn settings_proc(hwnd: HWND, msg: u32, w: WPARAM, l: 
                                 .trim()
                                 .parse::<i32>()
                                 .unwrap_or(CONFIG.spacing)
-                                .clamp(72, 96);
+                                .clamp(36, 96);
                         }
                     }
                     ID_OFFSETS => {
@@ -617,6 +617,7 @@ pub(crate) extern "system" fn settings_proc(hwnd: HWND, msg: u32, w: WPARAM, l: 
                 }
                 restyle_shell_windows();
                 position_dock();
+                sync_tiling_from_config();
                 let _ = InvalidateRect(PANEL, None, false);
                 let _ = InvalidateRect(DOCK, None, false);
                 LRESULT(0)

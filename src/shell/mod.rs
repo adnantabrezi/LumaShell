@@ -130,8 +130,8 @@ mod launch_popup;
 mod osd;
 mod panel;
 use panel::{
-    COPYDATASTRUCT, broadcast_taskbar_created, is_tray_chevron_at_x, paint_panel, panel_applet_at,
-    panel_tray_bounds, tray_icon_at_x,
+    COPYDATASTRUCT, broadcast_taskbar_created, is_tiling_button_at_x, is_tray_chevron_at_x,
+    paint_panel, panel_applet_at, panel_tray_bounds, tray_icon_at_x,
 };
 mod popups;
 mod settings;
@@ -141,6 +141,8 @@ mod snipping;
 use snipping::*;
 mod gpu;
 use gpu::*;
+mod tiling;
+mod tiling_popup;
 
 const PANEL_HEIGHT: i32 = 38;
 
@@ -166,6 +168,15 @@ const HOTKEY_MOVE_WINDOW_NEXT: i32 = 15;
 const HOTKEY_LAUNCHER: i32 = 16;
 const HOTKEY_EXPLORER: i32 = 17;
 const HOTKEY_TERMINAL: i32 = 18;
+const HOTKEY_TILING_TOGGLE: i32 = 19;
+const HOTKEY_TILING_FLOAT: i32 = 20;
+const HOTKEY_TILING_SPLIT: i32 = 21;
+const HOTKEY_TILING_SWAP_PREV: i32 = 22;
+const HOTKEY_TILING_SWAP_NEXT: i32 = 23;
+const HOTKEY_TILING_FOCUS_PREV: i32 = 24;
+const HOTKEY_TILING_FOCUS_NEXT: i32 = 25;
+const HOTKEY_TILING_GROW: i32 = 26;
+const HOTKEY_TILING_SHRINK: i32 = 27;
 const OSD_WIDTH: i32 = 260;
 const OSD_HEIGHT: i32 = 54;
 const ID_OSD_TIMER: usize = 701;
@@ -663,6 +674,10 @@ unsafe fn restyle_shell_windows() {
     style_window(NETWORK_POPUP);
     style_window(BLUETOOTH_POPUP);
     style_window(TRAY_POPUP);
+    let tiling_popup = tiling_popup::tiling_popup_hwnd();
+    if !tiling_popup.is_invalid() {
+        style_window(tiling_popup);
+    }
     if !OSD_WINDOW.is_invalid() {
         style_window(OSD_WINDOW);
     }
@@ -670,6 +685,24 @@ unsafe fn restyle_shell_windows() {
         style_window(SECONDARY_PANELS[index]);
         style_window(SECONDARY_DOCKS[index]);
     }
+}
+
+pub(crate) unsafe fn sync_tiling_from_config() {
+    let c = CONFIG;
+    tiling::update_tiling_settings(tiling::TilingSettings {
+        enabled: c.tiling_enabled,
+        direction: if c.tiling_vertical {
+            tiling::TilingDirection::Vertical
+        } else {
+            tiling::TilingDirection::Horizontal
+        },
+        inner_gap: c.tiling_inner_gap,
+        outer_gap: c.tiling_outer_gap,
+        active_hint: c.tiling_active_hint,
+        accent_rgb: c.accent_color,
+        animation_ms: c.tiling_animation_ms,
+        dock_auto_hide: c.auto_hide,
+    });
 }
 
 unsafe fn register_panel_appbar_for_rect(hwnd: HWND, monitor: RECT) -> APPBARDATA {
@@ -2418,8 +2451,10 @@ unsafe fn is_shell_window(hwnd: HWND) -> bool {
         || hwnd == AUDIO_MIXER
         || hwnd == NETWORK_POPUP
         || hwnd == BLUETOOTH_POPUP
+        || hwnd == TRAY_POPUP
         || hwnd == OSD_WINDOW
         || hwnd == SNIP_WINDOW
+        || tiling_popup::is_tiling_popup_hwnd(hwnd)
     {
         return true;
     }
@@ -2961,6 +2996,7 @@ unsafe fn switch_workspace(direction: VIRTUAL_KEY) {
     keybd_event(direction.0 as u8, 0, KEYEVENTF_KEYUP, 0);
     keybd_event(VK_LCONTROL.0 as u8, 0, KEYEVENTF_KEYUP, 0);
     keybd_event(VK_LWIN.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+    tiling::schedule_workspace_sync();
 }
 unsafe fn move_window_workspace(direction: VIRTUAL_KEY) {
     keybd_event(VK_LWIN.0 as u8, 0, Default::default(), 0);
@@ -2971,6 +3007,7 @@ unsafe fn move_window_workspace(direction: VIRTUAL_KEY) {
     keybd_event(VK_LSHIFT.0 as u8, 0, KEYEVENTF_KEYUP, 0);
     keybd_event(VK_LCONTROL.0 as u8, 0, KEYEVENTF_KEYUP, 0);
     keybd_event(VK_LWIN.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+    tiling::schedule_workspace_sync();
 }
 unsafe fn activate_dock_icon(index: i32) {
     let pinned = pinned_dock_items();
@@ -3258,6 +3295,13 @@ unsafe fn invalidate_shell_surfaces() {
     if IsWindowVisible(BLUETOOTH_POPUP).as_bool() {
         let _ = InvalidateRect(BLUETOOTH_POPUP, None, false);
     }
+    if !TRAY_POPUP.is_invalid() && IsWindowVisible(TRAY_POPUP).as_bool() {
+        let _ = InvalidateRect(TRAY_POPUP, None, false);
+    }
+    let tiling_popup = tiling_popup::tiling_popup_hwnd();
+    if !tiling_popup.is_invalid() && IsWindowVisible(tiling_popup).as_bool() {
+        let _ = InvalidateRect(tiling_popup, None, false);
+    }
 }
 
 unsafe fn refresh_app_index_if_due() {
@@ -3321,9 +3365,11 @@ unsafe fn destroy_secondary_monitors() {
             unregister_panel_appbar(&mut appbar);
         }
         if !SECONDARY_PANELS[index].is_invalid() {
+            tiling::unregister_shell_window(SECONDARY_PANELS[index]);
             let _ = DestroyWindow(SECONDARY_PANELS[index]);
         }
         if !SECONDARY_DOCKS[index].is_invalid() {
+            tiling::unregister_shell_window(SECONDARY_DOCKS[index]);
             let _ = DestroyWindow(SECONDARY_DOCKS[index]);
         }
         SECONDARY_PANELS[index] = HWND(null_mut());
@@ -3374,6 +3420,8 @@ unsafe fn create_secondary_monitor(hmonitor: HMONITOR) {
     .unwrap();
     style_window(panel);
     style_window(dock);
+    tiling::register_shell_window(panel);
+    tiling::register_shell_window(dock);
     let appbar = register_panel_appbar_for_rect(panel, info.rcMonitor);
     position_dock_on_monitor(dock, hmonitor);
     SECONDARY_PANELS[SECONDARY_COUNT] = panel;
@@ -4339,6 +4387,8 @@ extern "system" fn panel_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRE
                             LPARAM(0x0402 as isize),
                         );
                     }
+                } else if is_tiling_button_at_x(hwnd, x) {
+                    tiling_popup::show_tiling_popup(hwnd);
                 } else if is_tray_chevron_at_x(hwnd, x) {
                     show_tray_popup();
                 } else if let Some(id) = panel_applet_at(hwnd, x) {
@@ -4379,6 +4429,11 @@ extern "system" fn panel_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRE
                             LPARAM(0x0404 as isize),
                         );
                     }
+                } else if is_tiling_button_at_x(hwnd, x) {
+                    let enabled = tiling::toggle_tiling_mode();
+                    CONFIG.tiling_enabled = enabled;
+                    save_config();
+                    invalidate_shell_surfaces();
                 } else if is_tray_chevron_at_x(hwnd, x) {
                     show_tray_popup();
                 }
@@ -4526,6 +4581,29 @@ extern "system" fn panel_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRE
                     move_window_workspace(VK_LEFT);
                 } else if w.0 as i32 == HOTKEY_MOVE_WINDOW_NEXT {
                     move_window_workspace(VK_RIGHT);
+                } else if w.0 as i32 == HOTKEY_TILING_TOGGLE {
+                    let enabled = tiling::toggle_tiling_mode();
+                    CONFIG.tiling_enabled = enabled;
+                    save_config();
+                    invalidate_shell_surfaces();
+                } else if w.0 as i32 == HOTKEY_TILING_FLOAT {
+                    tiling::toggle_active_window_float();
+                } else if w.0 as i32 == HOTKEY_TILING_SPLIT {
+                    CONFIG.tiling_vertical = !CONFIG.tiling_vertical;
+                    tiling::flip_split_direction();
+                    save_config();
+                } else if w.0 as i32 == HOTKEY_TILING_SWAP_PREV {
+                    tiling::swap_focused_window(false);
+                } else if w.0 as i32 == HOTKEY_TILING_SWAP_NEXT {
+                    tiling::swap_focused_window(true);
+                } else if w.0 as i32 == HOTKEY_TILING_FOCUS_PREV {
+                    tiling::focus_neighbor_window(false);
+                } else if w.0 as i32 == HOTKEY_TILING_FOCUS_NEXT {
+                    tiling::focus_neighbor_window(true);
+                } else if w.0 as i32 == HOTKEY_TILING_GROW {
+                    tiling::resize_focused_window(0.22);
+                } else if w.0 as i32 == HOTKEY_TILING_SHRINK {
+                    tiling::resize_focused_window(-0.22);
                 } else {
                     toggle_dock();
                 }
@@ -4538,6 +4616,7 @@ extern "system" fn panel_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRE
                             reposition_primary_panel();
                             position_dock();
                             rebuild_secondary_monitors();
+                            tiling::relayout_workspace();
                         } else {
                             reposition_secondary_panel(hwnd);
                         }
@@ -4583,6 +4662,14 @@ extern "system" fn panel_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRE
                 }
                 LRESULT(0)
             }
+            WM_TIMER if w.0 == tiling::ID_TILING_ANIM_TIMER => {
+                tiling::tick_animation();
+                LRESULT(0)
+            }
+            WM_TIMER if w.0 == tiling::ID_TILING_WORKSPACE_SYNC_TIMER => {
+                tiling::handle_workspace_sync_timer();
+                LRESULT(0)
+            }
             WM_TIMER => {
                 static mut TRAY_BROADCAST_TICK: u32 = 0;
                 TRAY_BROADCAST_TICK = TRAY_BROADCAST_TICK.wrapping_add(1);
@@ -4602,6 +4689,7 @@ extern "system" fn panel_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRE
                 rebuild_secondary_monitors();
                 invalidate_shell_surfaces();
                 restyle_shell_windows();
+                tiling::relayout_workspace();
                 LRESULT(0)
             }
             WM_SETTINGCHANGE | WM_THEMECHANGED => {
@@ -5649,6 +5737,11 @@ pub unsafe fn run() {
     register_class(instance, "Shell_TrayWnd", Some(panel_proc));
     register_class(instance, "TrayNotifyWnd", Some(tray_notify_proc));
     register_class(instance, "LumaTrayPopup", Some(tray_popup_proc));
+    register_class(
+        instance,
+        "LumaTilingPopup",
+        Some(tiling_popup::tiling_popup_proc),
+    );
     register_class(instance, "LumaDock", Some(dock_proc));
     register_class(instance, "LumaSettings", Some(settings_proc));
     register_class(instance, "LumaLauncher", Some(launcher_proc));
@@ -5881,6 +5974,23 @@ pub unsafe fn run() {
         None,
     )
     .unwrap();
+    log_event("creating tiling popup window");
+    let tiling_popup_hwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+        PCWSTR(wide("LumaTilingPopup").as_ptr()),
+        PCWSTR(wide("COSMIC Tiling").as_ptr()),
+        WS_POPUP,
+        0,
+        0,
+        tiling_popup::TILING_POPUP_WIDTH,
+        tiling_popup::TILING_POPUP_HEIGHT,
+        None,
+        None,
+        instance,
+        None,
+    )
+    .unwrap();
+    tiling_popup::set_tiling_popup_hwnd(tiling_popup_hwnd);
     style_window(DOCK);
     let settings_corner = DWMWCP_ROUND;
     let _ = DwmSetWindowAttribute(
@@ -5902,6 +6012,7 @@ pub unsafe fn run() {
     style_window(NETWORK_POPUP);
     style_window(BLUETOOTH_POPUP);
     style_window(TRAY_POPUP);
+    style_window(tiling_popup_hwnd);
     if !OSD_WINDOW.is_invalid() {
         style_window(OSD_WINDOW);
     }
@@ -5963,6 +6074,51 @@ pub unsafe fn run() {
     if RegisterHotKey(PANEL, HOTKEY_LAUNCHER, MOD_WIN | MOD_ALT, 'L' as u32).is_err() {
         log_event("launcher hotkey unavailable");
     }
+    let _ = RegisterHotKey(PANEL, HOTKEY_TILING_TOGGLE, MOD_ALT | MOD_SHIFT, 'T' as u32);
+    let _ = RegisterHotKey(
+        PANEL,
+        HOTKEY_TILING_FLOAT,
+        MOD_ALT | MOD_SHIFT,
+        VK_SPACE.0 as u32,
+    );
+    let _ = RegisterHotKey(PANEL, HOTKEY_TILING_SPLIT, MOD_ALT, 'V' as u32);
+    let _ = RegisterHotKey(PANEL, HOTKEY_TILING_SWAP_PREV, MOD_ALT, 'H' as u32);
+    let _ = RegisterHotKey(PANEL, HOTKEY_TILING_SWAP_NEXT, MOD_ALT, 'L' as u32);
+    let _ = RegisterHotKey(PANEL, HOTKEY_TILING_FOCUS_PREV, MOD_ALT, 'K' as u32);
+    let _ = RegisterHotKey(PANEL, HOTKEY_TILING_FOCUS_NEXT, MOD_ALT, 'J' as u32);
+    let _ = RegisterHotKey(PANEL, HOTKEY_TILING_GROW, MOD_ALT, 0xBBu32);
+    let _ = RegisterHotKey(PANEL, HOTKEY_TILING_SHRINK, MOD_ALT, 0xBDu32);
+    tiling::init_tiling_hooks(
+        PANEL,
+        &[
+            PANEL,
+            DOCK,
+            DESKTOP,
+            SETTINGS,
+            LAUNCHER,
+            SWITCHER,
+            AUDIO_MIXER,
+            NETWORK_POPUP,
+            BLUETOOTH_POPUP,
+            TRAY_POPUP,
+            OSD_WINDOW,
+            tiling_popup_hwnd,
+        ],
+        tiling::TilingSettings {
+            enabled: CONFIG.tiling_enabled,
+            direction: if CONFIG.tiling_vertical {
+                tiling::TilingDirection::Vertical
+            } else {
+                tiling::TilingDirection::Horizontal
+            },
+            inner_gap: CONFIG.tiling_inner_gap,
+            outer_gap: CONFIG.tiling_outer_gap,
+            active_hint: CONFIG.tiling_active_hint,
+            accent_rgb: CONFIG.accent_color,
+            animation_ms: CONFIG.tiling_animation_ms,
+            dock_auto_hide: CONFIG.auto_hide,
+        },
+    );
     init_shell_integration(PANEL, DESKTOP);
     init_keyboard_hook();
     let mut msg = MSG::default();
@@ -5983,6 +6139,8 @@ pub unsafe fn run() {
         "GetMessage loop exited, msg: 0x{:04x}, wParam: {}",
         msg.message, msg.wParam.0
     ));
+    tiling::cleanup_tiling_hooks();
+    tiling_popup::destroy_tiling_popup();
     cleanup_keyboard_hook();
     cleanup_shell_integration(PANEL);
     show_windows_shell_windows();
@@ -6014,6 +6172,15 @@ pub unsafe fn run() {
     UnregisterHotKey(PANEL, HOTKEY_LAUNCHER);
     UnregisterHotKey(PANEL, HOTKEY_EXPLORER);
     UnregisterHotKey(PANEL, HOTKEY_TERMINAL);
+    let _ = UnregisterHotKey(PANEL, HOTKEY_TILING_TOGGLE);
+    let _ = UnregisterHotKey(PANEL, HOTKEY_TILING_FLOAT);
+    let _ = UnregisterHotKey(PANEL, HOTKEY_TILING_SPLIT);
+    let _ = UnregisterHotKey(PANEL, HOTKEY_TILING_SWAP_PREV);
+    let _ = UnregisterHotKey(PANEL, HOTKEY_TILING_SWAP_NEXT);
+    let _ = UnregisterHotKey(PANEL, HOTKEY_TILING_FOCUS_PREV);
+    let _ = UnregisterHotKey(PANEL, HOTKEY_TILING_FOCUS_NEXT);
+    let _ = UnregisterHotKey(PANEL, HOTKEY_TILING_GROW);
+    let _ = UnregisterHotKey(PANEL, HOTKEY_TILING_SHRINK);
     if winrt_initialized {
         RoUninitialize();
     }
@@ -6089,8 +6256,15 @@ mod tests {
     #[test]
     fn dock_proportions_and_sizing() {
         let config = default_config();
-        assert_eq!(config.icon_size, 36);
-        assert_eq!(config.spacing, 50);
+        assert_eq!(config.icon_size, 42);
+        assert_eq!(config.spacing, 56);
+        assert_eq!(config.transparency, 148);
+        assert!(config.tiling_enabled);
+        assert!(!config.tiling_vertical);
+        assert_eq!(config.tiling_inner_gap, 10);
+        assert_eq!(config.tiling_outer_gap, 12);
+        assert!(config.tiling_active_hint);
+        assert_eq!(config.tiling_animation_ms, 240);
     }
 
     #[test]
